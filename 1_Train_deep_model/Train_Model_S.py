@@ -22,7 +22,7 @@ from tensorboardX import SummaryWriter
 ### USER PARAMS ###
 EXP_NAME = "SR-LUT"
 VERSION = "S"
-UPSCALE = 4     # upscaling factor
+UPSCALE = 2     # upscaling factor
 
 NB_BATCH = 32        # mini-batch
 CROP_SIZE = 48       # input LR training patch size
@@ -43,6 +43,39 @@ LR_G = 1e-4         # Learning rate for the generator
 writer = SummaryWriter(log_dir='./log/{}'.format(str(VERSION)))
 
 
+class RC_Module(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=(3, 3), filter_num=64, bias=True):
+        assert kernel_size[0] % 2 == 1 and kernel_size[1] % 2 == 1, "kernel_size must be odd number"
+        super(RC_Module, self).__init__()
+        self.kernel_size = kernel_size
+        pad_vertical, pad_horizontal = (kernel_size[0])//2, (kernel_size[1])//2
+        self.unfold = nn.Unfold(kernel_size=kernel_size, padding=(pad_vertical, pad_horizontal))
+
+        self.linear_in = nn.ModuleList([nn.Linear(in_channels, filter_num) for _ in range(kernel_size[0] * kernel_size[1])])
+        self.linear_out = nn.ModuleList([nn.Linear(filter_num, out_channels) for _ in range(kernel_size[0] * kernel_size[1])])
+
+    def forward(self, x):
+        # Reshape the x to make it easy to manipulate
+        x_shape = x.shape
+        x = self.unfold(x)  # B, C*k*k, L
+        x = x.reshape(x_shape[0], x_shape[1], self.kernel_size[0] * self.kernel_size[1], -1)  # B, C, k*k, L
+        x = x.permute(0, 3, 1, 2)  # B, L, C, k*k
+        x = x.reshape(-1, x_shape[1], self.kernel_size[0] * self.kernel_size[1])  # B*L, C, k*k
+
+        # Linear transform the input
+        x_kv = [linear_in(x[:, :, i]) for i, linear_in in enumerate(self.linear_in)]
+        x_out = [linear_out(x_kv[i]) for i, linear_out in enumerate(self.linear_out)]  # [(B*L, Cout), ...]
+
+        # Average the x_out list to get the output
+        x_out = torch.stack(x_out, dim=-1)  # B*L, Cout, k*k
+        x_out = x_out.mean(dim=-1)  # B*L, Cout
+    
+        # Reshape back to B, C, H, W
+        Cout_dim = x_out.shape[1]
+        x_out = x_out.reshape(x_shape[0], -1, Cout_dim)  # B, L, Cout
+        x_out = x_out.permute(0, 2, 1)  # B, Cout, L
+        x_out = x_out.reshape(x_shape[0], Cout_dim, x_shape[2], x_shape[3])  # B, Cout, H, W
+        return x_out
 
 
 
@@ -52,7 +85,7 @@ class SRNet(torch.nn.Module):
         super(SRNet, self).__init__()
 
         self.upscale = upscale
-
+        self.rc_module = RC_Module(in_channels=1, out_channels=1, kernel_size=(5,5), filter_num=64)
         self.conv1 = nn.Conv2d(1, 64, [2,2], stride=1, padding=0, dilation=1)
         self.conv2 = nn.Conv2d(64, 64, 1, stride=1, padding=0, dilation=1)
         self.conv3 = nn.Conv2d(64, 64, 1, stride=1, padding=0, dilation=1)
@@ -75,7 +108,7 @@ class SRNet(torch.nn.Module):
     def forward(self, x_in):
         B, C, H, W = x_in.size()
         x_in = x_in.reshape(B*C, 1, H, W)
-
+        x_in = self.rc_module(x_in)
         x = self.conv1(x_in)
         x = self.conv2(F.relu(x))
         x = self.conv3(F.relu(x))
@@ -113,7 +146,7 @@ Iter_H = GeneratorEnqueuer(DirectoryIterator_DIV2K(
                                 crop_per_image = NB_BATCH//4,
                                 out_batch_size = NB_BATCH,
                                 scale_factor = UPSCALE,
-                                shuffle=True))
+                                shuffle=True), use_multiprocessing=False)
 Iter_H.start(max_q_size=16, workers=4)
 
 
@@ -220,7 +253,7 @@ for i in tqdm(range(START_ITER+1, NB_ITER+1)):
             # Test for validation images
             files_gt = glob.glob(VAL_DIR + '/HR/*.png')
             files_gt.sort()
-            files_lr = glob.glob(VAL_DIR + '/LR/*.png')
+            files_lr = glob.glob(VAL_DIR + '/LRx{}/*.png'.format(UPSCALE))
             files_lr.sort()
 
             psnrs = []
@@ -237,8 +270,8 @@ for i in tqdm(range(START_ITER+1, NB_ITER+1)):
                 val_L = np.transpose(val_L, [2, 0, 1])      # CxHxW
                 val_L = val_L[np.newaxis, ...]            # BxCxHxW
 
-                val_L = Variable(torch.from_numpy(val_L.copy()), volatile=True).cuda()
-                        
+                val_L = Variable(torch.from_numpy(val_L.copy())).cuda()
+
                 # Run model
                 batch_S1 = model_G(F.pad(val_L, (0,1,0,1), mode='reflect'))
 
@@ -255,7 +288,6 @@ for i in tqdm(range(START_ITER+1, NB_ITER+1)):
                 batch_S += ( torch.clamp(batch_S3,-1,1)*127 + torch.clamp(batch_S4,-1,1)*127 )
                 batch_S /= 255.0
 
-
                 # Output 
                 image_out = (batch_S).cpu().data.numpy()
                 image_out = np.clip(image_out[0], 0. , 1.)      # CxHxW
@@ -263,7 +295,7 @@ for i in tqdm(range(START_ITER+1, NB_ITER+1)):
 
                 # Save to file
                 image_out = ((image_out)*255).astype(np.uint8)
-                Image.fromarray(image_out).save('result/{}/{}.png'.format(str(VERSION), fn.split('/')[-1]))
+                Image.fromarray(image_out).save('result/{}/{}.png'.format(str(VERSION), fn.split('\\')[-1]))
 
                 # PSNR on Y channel
                 img_gt = (val_H*255).astype(np.uint8)

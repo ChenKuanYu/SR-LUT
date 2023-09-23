@@ -128,7 +128,7 @@ for ti, fn in enumerate(tqdm(files_gt)):
         img_target = np.pad(img_out, ((0,0),(0,img_gt.shape[1]-img_out.shape[1]),(0,0)))
 
     # Save to file
-    Image.fromarray(img_out).save('./output_V_x{}_{}bit/{}_LUT_interp_{}bit.png'.format(UPSCALE, SAMPLING_INTERVAL, fn.split('/')[-1][:-4], SAMPLING_INTERVAL))
+    Image.fromarray(img_out).save('./output_V_x{}_{}bit/{}_LUT_interp_{}bit.png'.format(UPSCALE, SAMPLING_INTERVAL, fn.split('\\')[-1][:-4], SAMPLING_INTERVAL))
 
     CROP_S = 4
     psnr = PSNR(_rgb2ycbcr(img_gt)[:,:,0], _rgb2ycbcr(img_out)[:,:,0], CROP_S)

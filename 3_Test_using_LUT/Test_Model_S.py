@@ -15,7 +15,7 @@ from utils import PSNR, _rgb2ycbcr
 
 
 # USER PARAMS
-UPSCALE = 4     # upscaling factor
+UPSCALE = 2     # upscaling factor
 SAMPLING_INTERVAL = 4        # N bit uniform sampling
 LUT_PATH = "Model_S_x{}_{}bit_int8.npy".format(UPSCALE, SAMPLING_INTERVAL)    # Trained SR net params
 TEST_DIR = './test/'      # Test images
@@ -201,7 +201,7 @@ for ti, fn in enumerate(tqdm(files_gt)):
         img_out = np.pad(img_out, ((0,0),(0,img_gt.shape[1]-img_out.shape[1]),(0,0)))
 
     # Save to file
-    Image.fromarray(img_out).save('./output_S_x{}_{}bit/{}_LUT_interp_{}bit.png'.format(UPSCALE, SAMPLING_INTERVAL, fn.split('/')[-1][:-4], SAMPLING_INTERVAL))
+    Image.fromarray(img_out).save('./output_S_x{}_{}bit/{}_LUT_interp_{}bit.png'.format(UPSCALE, SAMPLING_INTERVAL, fn.split('\\')[-1][:-4], SAMPLING_INTERVAL))
 
     CROP_S = 4
     psnr = PSNR(_rgb2ycbcr(img_gt)[:,:,0], _rgb2ycbcr(img_out)[:,:,0], CROP_S)
